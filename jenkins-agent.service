@@ -1,0 +1,12 @@
+[Unit]
+Description=Register this machine as a worker with Jenkins
+
+[Service]
+Type=simple
+RestartSec=10
+ExecStart=/usr/local/bin/jenkins_agent start
+ExecStop=/usr/local/bin/jenkins_agent shutdown
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
