@@ -6,7 +6,7 @@ import logging
 import os
 import os.path
 import xml.etree.ElementTree as ET
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 
 import requests
 
@@ -14,7 +14,6 @@ logging.basicConfig()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-GCE_METADATA_ENDPOINT = 'http://metadata.google.internal/computeMetadata/v1/instance'
 JENKINS_AGENT_JAR_PATH = 'jnlpJars/agent.jar'
 JENKINS_AGENT_JAR_LOCAL_PATH = '/tmp/agent.jar'
 JENKINS_AGENT_LOCAL_HOME_PATH = '/home/ubuntu'
@@ -27,23 +26,65 @@ def get_credentialed_session(credentials):
     return session
 
 
-def load_instance_metadata_item(path):
-    headers = {
-        'Metadata-Flavor': 'Google',
-    }
-    url = f'{GCE_METADATA_ENDPOINT}/{path}'
-    response = requests.get(url, headers=headers)
-    if response.status_code == requests.codes.ok:
-        return response.content.decode('utf-8')
-    response.raise_for_status()
+class InstanceMetadata(object):
+    endpoint = None
+
+    def get_item(self, path):
+        response = requests.get(urljoin(self.endpoint, path))
+        if response.status_code == requests.codes.ok:
+            return response.content.decode('utf-8')
+        return None
+
+    def is_available(self):
+        if self.endpoint is None:
+            return False
+        try:
+            requests.head(self.endpoint)
+            return True
+        except requests.exceptions.ConnectionError:
+            return False
+
+    def get_tag(self):
+        raise NotImplementedError
+
+    def get_name(self):
+        raise NotImplementedError
+
+
+class AWSInstanceMetadata(InstanceMetadata):
+    endpoint = 'http://169.254.169.254/latest/meta-data/'
+
+    def get_tag(self, tag):
+        return self.get_item(f'tags/instance/{tag}')
+
+    def get_name(self):
+        return self.get_tag('Name')
+
+
+class GCEInstanceMetadata(InstanceMetadata):
+    endpoint = 'http://metadata.google.internal/computeMetadata/v1/instance/'
+
+    def get_tag(self, tag):
+        return self.get_item(f'attributes/{tag}')
+
+    def get_name(self):
+        return self.get_item('name')
 
 
 def load_instance_metadata():
-    logger.info('Retrieving GCE internal computeMetadata')
-    node_name = load_instance_metadata_item('name')
-    jenkins_url = load_instance_metadata_item('attributes/JENKINS_URL')
-    jnlp_credentials = load_instance_metadata_item('attributes/JNLP_CREDENTIALS')
-    jenkins_label = load_instance_metadata_item('attributes/JENKINS_AGENT_LABEL')
+    logger.info('Retrieving instance metadata')
+
+    metadata_connectors = [AWSInstanceMetadata(), GCEInstanceMetadata()]
+    for metadata in metadata_connectors:
+        if metadata.is_available():
+            break
+    else:
+        raise RuntimeError('Could not connect to instance metadata')
+
+    node_name = metadata.get_name()
+    jenkins_url = metadata.get_tag('JENKINS_URL')
+    jnlp_credentials = metadata.get_tag('JNLP_CREDENTIALS')
+    jenkins_label = metadata.get_tag('JENKINS_AGENT_LABEL')
 
     instance_data = {
         'jenkins_url': jenkins_url.strip('/'),
